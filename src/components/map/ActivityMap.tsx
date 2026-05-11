@@ -454,18 +454,23 @@ export function ActivityMap({
     setIsExporting(true);
     try {
       if (map) map.invalidateSize({ animate: false });
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      // Let Leaflet finish laying out + give any tiles in the newly-visible
+      // area time to actually load before we rasterise.
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
 
+      const rect = el.getBoundingClientRect();
       const canvas = await html2canvas(el, {
         useCORS: true,
         allowTaint: false,
         backgroundColor: null,
         scale: 2,
         logging: false,
-        width: el.clientWidth,
-        height: el.clientHeight,
-        windowWidth: el.clientWidth,
-        windowHeight: el.clientHeight,
+        // Pin to the wrapper's actual rendered size. Don't pass
+        // windowWidth/windowHeight — those re-simulate the page at a
+        // different viewport size which de-syncs Leaflet's tile layout
+        // and drops the rightmost partial tile column.
+        width: Math.ceil(rect.width),
+        height: Math.ceil(rect.height),
       });
 
       canvas.toBlob((blob) => {

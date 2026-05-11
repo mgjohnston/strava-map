@@ -120,6 +120,7 @@ export function MapView({ isConnected, isSyncing, activities, onSync }: MapViewP
 
   const skiOnly = selectedBuckets.size === 1 && selectedBuckets.has('ski');
   const totalDistanceKm = filtered.reduce((sum, a) => sum + (a.distance || 0) / 1000, 0);
+  const totalAscentM = filtered.reduce((sum, a) => sum + (a.total_elevation_gain || 0), 0);
 
   const watermark = useMemo(() => {
     const fmt = (iso: string) =>
@@ -191,7 +192,7 @@ export function MapView({ isConnected, isSyncing, activities, onSync }: MapViewP
             <Typography variant="body2" color="text.secondary">
               {activities.length === 0
                 ? 'No activities cached yet — hit Sync to fetch.'
-                : `${routes.length} of ${activities.length} cached activit${activities.length === 1 ? 'y' : 'ies'} in view · ${totalDistanceKm.toFixed(1)} km`}
+                : `${routes.length} of ${activities.length} cached activit${activities.length === 1 ? 'y' : 'ies'} in view · ${totalDistanceKm.toFixed(1)} km · ${Math.round(totalAscentM).toLocaleString()} m ↑`}
             </Typography>
             <Button
               variant="contained"

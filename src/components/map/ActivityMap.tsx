@@ -465,12 +465,13 @@ export function ActivityMap({
         backgroundColor: null,
         scale: 2,
         logging: false,
-        // Pin to the wrapper's actual rendered size. Don't pass
-        // windowWidth/windowHeight — those re-simulate the page at a
-        // different viewport size which de-syncs Leaflet's tile layout
-        // and drops the rightmost partial tile column.
         width: Math.ceil(rect.width),
         height: Math.ceil(rect.height),
+        // Strip the +/− zoom control from the snapshot. Keep attribution
+        // (legally required) and our own watermark/legend (decorative,
+        // inside the wrapper so handled separately).
+        ignoreElements: (node) =>
+          node instanceof HTMLElement && node.classList.contains('leaflet-control-zoom'),
       });
 
       canvas.toBlob((blob) => {

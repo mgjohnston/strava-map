@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import SyncIcon from '@mui/icons-material/Sync';
 import type { StravaActivity } from '../types';
-import { ActivityMap } from './map';
+import { ActivityMap, type ActivityRoute } from './map';
 import { SportPicker, DateRangePicker, TripSuggestions } from './trip';
 import {
   ALL_BUCKET_IDS,
@@ -19,6 +19,7 @@ import {
   type BucketId,
 } from '../utils/sportBuckets';
 import { detectTrips } from '../utils/tripDetection';
+import { useActivityStreams } from '../hooks/useActivityStreams';
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -50,6 +51,7 @@ export function MapView({ isConnected, isSyncing, activities, onSync }: MapViewP
   );
   const [startDate, setStartDate] = useState<string>(defaultStartDate);
   const [endDate, setEndDate] = useState<string>(defaultEndDate);
+  const [colorByDirection, setColorByDirection] = useState(false);
 
   // Trip suggestions run over the FULL cached set so trips outside the current
   // date window still surface (the whole point of auto-suggest).
@@ -86,12 +88,34 @@ export function MapView({ isConnected, isSyncing, activities, onSync }: MapViewP
     [bucketedActivities, selectedBuckets, selectedSportTypes],
   );
 
-  const polylines = useMemo(
+  // Activities that have any usable route polyline.
+  const mappableActivities = useMemo(
     () =>
-      filtered
-        .map((a) => a.map?.summary_polyline ?? a.map?.polyline ?? '')
-        .filter((s) => s.length > 0),
+      filtered.filter(
+        (a) => (a.map?.summary_polyline ?? a.map?.polyline ?? '').length > 0,
+      ),
     [filtered],
+  );
+
+  const mappableIds = useMemo(
+    () => mappableActivities.map((a) => a.id),
+    [mappableActivities],
+  );
+
+  // Only fetch altitude streams when the toggle is on.
+  const { streams, loading: directionsLoading } = useActivityStreams(
+    mappableIds,
+    colorByDirection,
+  );
+
+  const routes = useMemo<ActivityRoute[]>(
+    () =>
+      mappableActivities.map((a) => ({
+        id: a.id,
+        polyline: a.map?.summary_polyline ?? a.map?.polyline ?? '',
+        stream: streams.get(a.id),
+      })),
+    [mappableActivities, streams],
   );
 
   const skiOnly = selectedBuckets.size === 1 && selectedBuckets.has('ski');
@@ -167,7 +191,7 @@ export function MapView({ isConnected, isSyncing, activities, onSync }: MapViewP
             <Typography variant="body2" color="text.secondary">
               {activities.length === 0
                 ? 'No activities cached yet — hit Sync to fetch.'
-                : `${filtered.length} of ${activities.length} cached activit${activities.length === 1 ? 'y' : 'ies'} in view · ${totalDistanceKm.toFixed(1)} km`}
+                : `${routes.length} of ${activities.length} cached activit${activities.length === 1 ? 'y' : 'ies'} in view · ${totalDistanceKm.toFixed(1)} km`}
             </Typography>
             <Button
               variant="contained"
@@ -186,12 +210,15 @@ export function MapView({ isConnected, isSyncing, activities, onSync }: MapViewP
       <Box>
         <ActivityMap
           key={skiOnly ? 'ski' : 'default'}
-          polylines={polylines}
+          routes={routes}
           title="🗺️ Your activity map"
           defaultBasemap={skiOnly ? 'terrain' : 'light'}
           defaultOverlay={skiOnly ? 'pistes' : 'none'}
           watermark={watermark}
           exportFilename={exportFilename}
+          colorByDirection={colorByDirection}
+          onColorByDirectionChange={setColorByDirection}
+          directionsLoading={directionsLoading}
         />
       </Box>
     </Stack>

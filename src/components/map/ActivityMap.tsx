@@ -12,6 +12,8 @@ import {
   MenuItem,
   FormControl,
   InputLabel,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import DownloadIcon from '@mui/icons-material/Download';
 import L from 'leaflet';
@@ -19,6 +21,7 @@ import 'leaflet/dist/leaflet.css';
 import html2canvas from 'html2canvas';
 import { decodePolyline } from '../../utils/polyline';
 import { fetchSkiLifts, liftColor, type LiftWay } from '../../services/overpass';
+import type { ActivityStream } from '../../services/stravaStreams';
 
 export type Basemap = 'light' | 'terrain' | 'satellite';
 export type SkiOverlay = 'none' | 'pistes' | 'lifts';
@@ -30,8 +33,14 @@ export type MapShape =
   | 'square'
   | 'banner';
 
+export interface ActivityRoute {
+  id: number;
+  polyline: string;
+  stream?: ActivityStream | null; // null = activity has no stream available
+}
+
 interface ActivityMapProps {
-  polylines: string[];
+  routes: ActivityRoute[];
   title?: string;
   subtitle?: string;
   defaultBasemap?: Basemap;
@@ -39,14 +48,27 @@ interface ActivityMapProps {
   defaultShape?: MapShape;
   watermark?: string;
   exportFilename?: string;
+  colorByDirection: boolean;
+  onColorByDirectionChange: (next: boolean) => void;
+  directionsLoading?: boolean;
 }
 
 const HEATMAP_COLOR = '#FC4C02';
 const HEATMAP_WEIGHT = 4;
 const HEATMAP_OPACITY = 0.35;
 
+const DOWN_COLOR = '#FC4C02'; // Strava orange — downhill
+const UP_COLOR = '#1976d2'; // blue — uphill
+const FLAT_COLOR = '#9e9e9e'; // grey — flat
+const ELEVATION_WEIGHT = 4;
+const ELEVATION_OPACITY = 0.55;
+const ALTITUDE_SMOOTH_WINDOW = 9; // ±9 samples → 19-pt window
+const DELTA_LOOKBACK = 6; // compare against the point N samples earlier
+const FLAT_GRADE = 0.015; // |Δalt / Δhoriz| under 1.5% → flat
+const MIN_HORIZONTAL_M = 2; // ignore stationary jitter
+
 interface ShapeDef {
-  width: number | string; // numeric → centered fixed; string ('100%') → full container
+  width: number | string;
   height: number;
   label: string;
 }
@@ -107,8 +129,75 @@ function makePistesLayer(): L.TileLayer {
   });
 }
 
+function metersBetween(a: [number, number], b: [number, number]): number {
+  // Equirectangular approx — accurate enough for the few-metre point-to-point
+  // distances we compare against altitude deltas.
+  const dLat = (b[0] - a[0]) * 111000;
+  const dLng = (b[1] - a[1]) * 111000 * Math.cos((a[0] * Math.PI) / 180);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
+function classifyByGrade(deltaAlt: number, deltaMeters: number): string {
+  if (deltaMeters < MIN_HORIZONTAL_M) return FLAT_COLOR;
+  const grade = deltaAlt / deltaMeters;
+  if (Math.abs(grade) < FLAT_GRADE) return FLAT_COLOR;
+  return grade > 0 ? UP_COLOR : DOWN_COLOR;
+}
+
+// Centred moving-average over `radius` samples each side. Kills the high-
+// frequency altitude noise (~0.5 m jitter) that fragments long descents into
+// dozens of tiny same-direction stubs.
+function smoothAltitudes(alt: number[], radius: number): number[] {
+  const n = alt.length;
+  const out = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(0, i - radius);
+    const hi = Math.min(n - 1, i + radius);
+    let sum = 0;
+    for (let j = lo; j <= hi; j++) sum += alt[j];
+    out[i] = sum / (hi - lo + 1);
+  }
+  return out;
+}
+
+function buildColoredSegments(
+  latlng: [number, number][],
+  altitude: number[],
+): Array<{ coords: [number, number][]; color: string }> {
+  const n = Math.min(latlng.length, altitude.length);
+  if (n < 2) return [];
+
+  const smooth = smoothAltitudes(altitude, ALTITUDE_SMOOTH_WINDOW);
+  const segments: Array<{ coords: [number, number][]; color: string }> = [];
+  let current: { coords: [number, number][]; color: string } | null = null;
+
+  for (let i = 1; i < n; i++) {
+    // Grade = Δalt / Δhoriz over a fixed lookback window. Using grade rather
+    // than raw Δalt keeps classification consistent across slow activities
+    // (ski touring at 3 km/h) and fast ones (alpine skiing at 50 km/h).
+    const j = Math.max(0, i - DELTA_LOOKBACK);
+    const deltaAlt = smooth[i] - smooth[j];
+    const deltaMeters = metersBetween(latlng[j], latlng[i]);
+    const color = classifyByGrade(deltaAlt, deltaMeters);
+
+    if (!current) {
+      current = { coords: [latlng[i - 1], latlng[i]], color };
+    } else if (current.color === color) {
+      current.coords.push(latlng[i]);
+    } else {
+      // Don't duplicate the joint vertex into the next segment — combined
+      // with lineCap:'butt' below this stops the double-painted overlap that
+      // made downhill stretches look more opaque than uphill.
+      segments.push(current);
+      current = { coords: [latlng[i - 1], latlng[i]], color };
+    }
+  }
+  if (current) segments.push(current);
+  return segments;
+}
+
 export function ActivityMap({
-  polylines,
+  routes,
   title = 'Activities',
   subtitle,
   defaultBasemap = 'light',
@@ -116,12 +205,16 @@ export function ActivityMap({
   defaultShape = 'standard',
   watermark,
   exportFilename = 'strava-map',
+  colorByDirection,
+  onColorByDirectionChange,
+  directionsLoading = false,
 }: ActivityMapProps) {
   const mapWrapperRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const pisteLayerRef = useRef<L.TileLayer | null>(null);
   const liftsLayerRef = useRef<L.LayerGroup | null>(null);
+  const routesLayerRef = useRef<L.LayerGroup | null>(null);
   const liftsFetchTimer = useRef<number | null>(null);
 
   const [basemap, setBasemap] = useState<Basemap>(defaultBasemap);
@@ -130,19 +223,20 @@ export function ActivityMap({
   const [isExporting, setIsExporting] = useState(false);
   const [isLoadingLifts, setIsLoadingLifts] = useState(false);
 
-  // Keep an up-to-date ref of `overlay` for use inside the Leaflet event
-  // handler — without this the moveend closure captures a stale value and
-  // lift refetches stop firing after the user changes the overlay.
   const overlayRef = useRef(overlay);
   useEffect(() => {
     overlayRef.current = overlay;
   }, [overlay]);
 
-  const allCoordinates = useMemo(() => {
-    return polylines
-      .map((p) => decodePolyline(p))
-      .filter((coords) => coords.length > 0);
-  }, [polylines]);
+  // Decode summary polylines as a fallback for routes without streams.
+  const decodedFallback = useMemo(() => {
+    const map = new Map<number, [number, number][]>();
+    for (const route of routes) {
+      const coords = decodePolyline(route.polyline);
+      if (coords.length > 0) map.set(route.id, coords);
+    }
+    return map;
+  }, [routes]);
 
   const drawLifts = useCallback((map: L.Map, lifts: LiftWay[]) => {
     if (liftsLayerRef.current) {
@@ -193,9 +287,55 @@ export function ActivityMap({
     [refreshLifts],
   );
 
-  // Create the map + draw polylines whenever the activity set changes.
+  // Draw all activity routes; honours colorByDirection if stream data exists.
+  const drawRoutes = useCallback(
+    (map: L.Map) => {
+      if (routesLayerRef.current) {
+        map.removeLayer(routesLayerRef.current);
+        routesLayerRef.current = null;
+      }
+
+      const group = L.layerGroup();
+      const bounds = L.latLngBounds([]);
+
+      for (const route of routes) {
+        const decoded = decodedFallback.get(route.id);
+        const useStream = colorByDirection && route.stream;
+
+        if (useStream && route.stream) {
+          const segments = buildColoredSegments(route.stream.latlng, route.stream.altitude);
+          for (const seg of segments) {
+            const line = L.polyline(seg.coords, {
+              color: seg.color,
+              weight: ELEVATION_WEIGHT,
+              opacity: ELEVATION_OPACITY,
+              lineCap: 'butt', // flat caps — adjacent segments don't double-paint at joints
+              lineJoin: 'round',
+            }).addTo(group);
+            bounds.extend(line.getBounds());
+          }
+        } else if (decoded) {
+          const line = L.polyline(decoded, {
+            color: HEATMAP_COLOR,
+            weight: HEATMAP_WEIGHT,
+            opacity: HEATMAP_OPACITY,
+            lineCap: 'round',
+            lineJoin: 'round',
+          }).addTo(group);
+          bounds.extend(line.getBounds());
+        }
+      }
+
+      group.addTo(map);
+      routesLayerRef.current = group;
+      return bounds;
+    },
+    [routes, decodedFallback, colorByDirection],
+  );
+
+  // Create the map (once per route-set change at construction time).
   useEffect(() => {
-    if (!mapWrapperRef.current || allCoordinates.length === 0) return;
+    if (!mapWrapperRef.current || routes.length === 0) return;
 
     if (mapInstanceRef.current) {
       mapInstanceRef.current.remove();
@@ -203,7 +343,7 @@ export function ActivityMap({
 
     const map = L.map(mapWrapperRef.current, {
       zoomControl: true,
-      attributionControl: false, // we add our own control positioned bottom-left
+      attributionControl: false,
       preferCanvas: true,
       dragging: true,
       scrollWheelZoom: true,
@@ -225,20 +365,9 @@ export function ActivityMap({
       pisteLayerRef.current = makePistesLayer().addTo(map);
     }
 
-    const allBounds = L.latLngBounds([]);
-    allCoordinates.forEach((coordinates) => {
-      const routeLine = L.polyline(coordinates, {
-        color: HEATMAP_COLOR,
-        weight: HEATMAP_WEIGHT,
-        opacity: HEATMAP_OPACITY,
-        lineCap: 'round',
-        lineJoin: 'round',
-      }).addTo(map);
-      allBounds.extend(routeLine.getBounds());
-    });
-
-    if (allBounds.isValid()) {
-      map.fitBounds(allBounds, { padding: [20, 20] });
+    const bounds = drawRoutes(map);
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [20, 20] });
     }
 
     map.on('moveend', () => {
@@ -261,12 +390,20 @@ export function ActivityMap({
         baseLayerRef.current = null;
         pisteLayerRef.current = null;
         liftsLayerRef.current = null;
+        routesLayerRef.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allCoordinates]);
+  }, [routes.length === 0 ? 'empty' : routes.map((r) => r.id).join(',')]);
 
-  // Swap basemap without rebuilding the map (preserves pan/zoom).
+  // Redraw routes when color mode or stream data changes (no map rebuild,
+  // preserves pan/zoom).
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    drawRoutes(map);
+  }, [colorByDirection, routes, drawRoutes]);
+
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -277,7 +414,6 @@ export function ActivityMap({
     baseLayerRef.current.bringToBack();
   }, [basemap]);
 
-  // Overlay state changes (none / pistes / lifts).
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -290,7 +426,6 @@ export function ActivityMap({
       map.removeLayer(liftsLayerRef.current);
       liftsLayerRef.current = null;
     }
-    // Drop lift attribution; refreshLifts re-adds it if needed.
     map.attributionControl?.removeAttribution('Lifts © OpenStreetMap (via Overpass)');
 
     if (overlay === 'pistes') {
@@ -300,8 +435,6 @@ export function ActivityMap({
     }
   }, [overlay, refreshLifts]);
 
-  // Reshape: invalidateSize so Leaflet re-measures, then refetch lifts
-  // explicitly since the visible bounds just changed.
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -320,7 +453,6 @@ export function ActivityMap({
     if (!el) return;
     setIsExporting(true);
     try {
-      // Make sure Leaflet has finished any pending render before we snapshot.
       if (map) map.invalidateSize({ animate: false });
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
@@ -352,7 +484,7 @@ export function ActivityMap({
     }
   };
 
-  if (polylines.length === 0) {
+  if (routes.length === 0) {
     return (
       <Paper
         elevation={0}
@@ -394,7 +526,7 @@ export function ActivityMap({
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {subtitle ??
-              `${polylines.length} activit${polylines.length !== 1 ? 'ies' : 'y'} mapped · drag/scroll to compose, then export`}
+              `${routes.length} activit${routes.length !== 1 ? 'ies' : 'y'} mapped · drag/scroll to compose, then export`}
           </Typography>
         </Box>
 
@@ -444,6 +576,22 @@ export function ActivityMap({
             </ToggleButton>
           </ToggleButtonGroup>
 
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={colorByDirection}
+                onChange={(e) => onColorByDirectionChange(e.target.checked)}
+              />
+            }
+            label={
+              <Box component="span" sx={{ fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+                Up/down{directionsLoading ? '…' : ''}
+              </Box>
+            }
+            sx={{ mr: 0 }}
+          />
+
           <Button
             variant="outlined"
             size="small"
@@ -483,6 +631,32 @@ export function ActivityMap({
           },
         }}
       >
+        {colorByDirection && (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              px: 1.25,
+              py: 0.5,
+              bgcolor: 'rgba(255,255,255,0.92)',
+              borderRadius: 1,
+              fontSize: '0.72rem',
+              fontWeight: 600,
+              color: 'rgba(0,0,0,0.78)',
+              pointerEvents: 'none',
+              zIndex: 1000,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+              display: 'flex',
+              gap: 1.25,
+              alignItems: 'center',
+            }}
+          >
+            <LegendDot color={UP_COLOR} label="Up" />
+            <LegendDot color={DOWN_COLOR} label="Down" />
+            <LegendDot color={FLAT_COLOR} label="Flat" />
+          </Box>
+        )}
         {watermark && (
           <Box
             sx={{
@@ -507,5 +681,14 @@ export function ActivityMap({
         )}
       </Box>
     </Paper>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+      <Box sx={{ width: 10, height: 4, bgcolor: color, borderRadius: 0.5 }} />
+      <span>{label}</span>
+    </Box>
   );
 }

@@ -1,1 +1,6 @@
-export { ActivityMap, type Basemap, type SkiOverlay } from './ActivityMap';
+export {
+  ActivityMap,
+  type Basemap,
+  type SkiOverlay,
+  type ActivityRoute,
+} from './ActivityMap';

@@ -1,0 +1,1 @@
+export { StravaConnect } from './StravaConnect';

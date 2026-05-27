@@ -96,6 +96,14 @@ Tile providers and OSM-derived data are credited via Leaflet's attribution contr
 - **OpenSnowMap** for the pistes-and-lifts overlay
 - **OpenStreetMap via Overpass API** for the lifts-only overlay
 
+## Related: `cambridge-runs/`
+
+A standalone, runs-only fork lives in [`cambridge-runs/`](cambridge-runs/README.md). It strips out the sport buckets, ski overlays, altitude colouring and trip detection in favour of a single use case — visualising a long Cambridge run streak as a heatmap on a tight city-centred map, with global + per-run opacity controls and a live in-view stats overlay.
+
+![Sample export from cambridge-runs](cambridge-runs/docs/cambridge-runs-sample.png)
+
+It has its own `package.json` / `node_modules` and its own `cambridge_runs_*` localStorage keys, so the two apps co-exist cleanly.
+
 ## Licence
 
 MIT.

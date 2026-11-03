@@ -89,11 +89,19 @@ interface BasemapDef {
   subdomains?: string;
 }
 
+function withCartoKey(url: string): string {
+  const key = (import.meta.env.VITE_CARTO_API_KEY as string | undefined)?.trim();
+  return key ? `${url}?key=${encodeURIComponent(key)}` : url;
+}
+
 const BASEMAPS: Record<Basemap, BasemapDef> = {
   light: {
-    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    // CARTO raster basemaps need an API key since Sept 2026 (keyless tiles are
+    // watermarked). VITE_CARTO_API_KEY is appended as ?key= when set.
+    url: withCartoKey('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'),
     attribution: '© OpenStreetMap, © CARTO',
     maxZoom: 19,
+    subdomains: 'abcd',
   },
   terrain: {
     url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',

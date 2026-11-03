@@ -43,6 +43,7 @@ You'll need a Strava API application — create one at <https://www.strava.com/s
 VITE_STRAVA_CLIENT_ID=
 VITE_STRAVA_CLIENT_SECRET=
 VITE_STRAVA_REDIRECT_URI=http://localhost:5173/
+VITE_CARTO_API_KEY=            # CARTO basemaps key for the Light basemap (needs a localhost-allowed key)
 ```
 
 ## Commands

@@ -64,6 +64,7 @@ src/
 VITE_STRAVA_CLIENT_ID=
 VITE_STRAVA_CLIENT_SECRET=
 VITE_STRAVA_REDIRECT_URI=http://localhost:5173/
+VITE_CARTO_API_KEY=
 ```
 
 Get credentials at https://www.strava.com/settings/api.

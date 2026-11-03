@@ -89,15 +89,25 @@ interface BasemapDef {
   subdomains?: string;
 }
 
+/**
+ * The CARTO key comes from /config.js at runtime when deployed on the preview
+ * platform (nginx renders it from the injected CARTO_API_KEY; public/config.js
+ * is the empty local stand-in), else from VITE_CARTO_API_KEY at build time.
+ */
+function cartoApiKey(): string {
+  const runtime = (window as Window & { APP_CONFIG?: { cartoApiKey?: string | null } }).APP_CONFIG?.cartoApiKey;
+  return (runtime || (import.meta.env.VITE_CARTO_API_KEY as string | undefined) || '').trim();
+}
+
 function withCartoKey(url: string): string {
-  const key = (import.meta.env.VITE_CARTO_API_KEY as string | undefined)?.trim();
+  const key = cartoApiKey();
   return key ? `${url}?key=${encodeURIComponent(key)}` : url;
 }
 
 const BASEMAPS: Record<Basemap, BasemapDef> = {
   light: {
     // CARTO raster basemaps need an API key since Sept 2026 (keyless tiles are
-    // watermarked). VITE_CARTO_API_KEY is appended as ?key= when set.
+    // watermarked); appended as ?key= when one is configured (see cartoApiKey).
     url: withCartoKey('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png'),
     attribution: '© OpenStreetMap, © CARTO',
     maxZoom: 19,
